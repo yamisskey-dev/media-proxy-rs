@@ -1,7 +1,7 @@
 use core::str;
 use std::{io::Write, net::SocketAddr, pin::Pin, str::FromStr, sync::Arc};
 
-use axum::{body::StreamBody, http::HeaderMap, response::IntoResponse, Router};
+use axum::{http::HeaderMap, response::IntoResponse, Router};
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamExt;
 
@@ -23,6 +23,9 @@ pub struct ConfigFile{
 	load_system_fonts:bool,
 	webp_quality:f32,
 	encode_avif:bool,
+	allowed_networks:Option<Vec<String>>,
+	blocked_networks:Option<Vec<String>>,
+	blocked_hosts:Option<Vec<String>>,
 }
 #[derive(Debug, Deserialize)]
 pub struct RequestParams{
@@ -116,12 +119,35 @@ fn main() {
 			load_system_fonts:true,
 			webp_quality: 75f32,
 			encode_avif:false,
+			allowed_networks:None,
+			blocked_networks:None,
+			blocked_hosts:None,
 		};
 		let default_config=serde_json::to_string_pretty(&default_config).unwrap();
 		std::fs::File::create(&config_path).expect("create default config.json").write_all(default_config.as_bytes()).unwrap();
 	}
-	let config:ConfigFile=serde_json::from_reader(std::fs::File::open(&config_path).unwrap()).unwrap();
-
+	let mut config:ConfigFile=serde_json::from_reader(std::fs::File::open(&config_path).unwrap()).unwrap();
+	if let Ok(networks)=std::env::var("MEDIA_PROXY_ALLOWED_NETWORKS"){
+		let mut allowed_networks=config.allowed_networks.take().unwrap_or_default();
+		for networks in networks.split(","){
+			allowed_networks.push(networks.to_owned());
+		}
+		config.allowed_networks.replace(allowed_networks);
+	}
+	if let Ok(networks)=std::env::var("MEDIA_PROXY_BLOCKED_NETWORKS"){
+		let mut blocked_networks=config.blocked_networks.take().unwrap_or_default();
+		for networks in networks.split(","){
+			blocked_networks.push(networks.to_owned());
+		}
+		config.blocked_networks.replace(blocked_networks);
+	}
+	if let Ok(networks)=std::env::var("MEDIA_PROXY_BLOCKED_HOSTS"){
+		let mut blocked_hosts=config.blocked_hosts.take().unwrap_or_default();
+		for networks in networks.split(","){
+			blocked_hosts.push(networks.to_owned());
+		}
+		config.blocked_hosts.replace(blocked_hosts);
+	}
 	let dummy_png=Arc::new(include_bytes!("../asset/dummy.png").to_vec());
 	let config=Arc::new(config);
 	let rt=tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
@@ -143,20 +169,78 @@ fn main() {
 	let arg_tup=(client,config,dummy_png,fontdb);
 	rt.block_on(async{
 		let http_addr:SocketAddr = arg_tup.1.bind_addr.parse().unwrap();
+		let listener = tokio::net::TcpListener::bind(http_addr).await.unwrap();
 		let app = Router::new();
 		let arg_tup0=arg_tup.clone();
 		let app=app.route("/",axum::routing::get(move|headers,parms|get_file(None,headers,arg_tup0.clone(),parms)));
-		let app=app.route("/*path",axum::routing::get(move|path,headers,parms|get_file(Some(path),headers,arg_tup.clone(),parms)));
-		axum::Server::bind(&http_addr).serve(app.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(shutdown_signal()).await.unwrap();
+		let app=app.route("/{*path}",axum::routing::get(move|path,headers,parms|get_file(Some(path),headers,arg_tup.clone(),parms)));
+		axum::serve(listener,app.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(shutdown_signal()).await.unwrap();
 	});
 }
-
+async fn check_url(config:&Arc<ConfigFile>,url:impl AsRef<str>)->Result<(),String>{
+	let u=reqwest::Url::from_str(url.as_ref()).map_err(|e|format!("{:?}",e))?;
+	match u.scheme().to_lowercase().as_str(){
+		"http"|"https"=>{},
+		scheme=>return Err(format!("scheme: {}",scheme))
+	}
+	let host=u.host_str().ok_or_else(||"no host".to_owned())?;
+	if let Some(blocked_hosts)=&config.blocked_hosts{
+		if blocked_hosts.contains(&host.to_lowercase()){
+			return Err("Blocked address".to_owned());
+		}
+	}
+	use std::net::{SocketAddr, ToSocketAddrs};
+	use iprange::IpRange;
+	use ipnet::Ipv4Net;
+	let ips=format!("{}:{}",host,u.port_or_known_default().unwrap()).to_socket_addrs().map_err(|e|format!("{:?} {}",e,host))?;
+	let ipv4_private_range: IpRange<Ipv4Net> = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+		.iter()
+		.map(|s| s.parse().unwrap())
+		.collect();
+	let allow_ips=config.allowed_networks.as_ref().map(|ips|{
+		ips.iter()
+		.map(|s| s.parse().unwrap())
+		.collect::<IpRange<Ipv4Net>>()
+	});
+	let block_ips=config.blocked_networks.as_ref().map(|ips|{
+		ips.iter()
+		.map(|s| s.parse().unwrap())
+		.collect::<IpRange<Ipv4Net>>()
+	});
+	for ip in ips{
+		match ip{
+			SocketAddr::V4(v4) => {
+				if let Some(block_ips)=&block_ips{
+					if block_ips.contains(v4.ip()){
+						return Err("Blocked address".to_owned());
+					}
+				}
+				if ipv4_private_range.contains(v4.ip()){
+					let allow=if let Some(allow_ips)=&allow_ips{
+						allow_ips.contains(v4.ip())
+					}else{
+						false
+					};
+					if !allow{
+						return Err("Blocked address".to_owned());
+					}
+				}
+			},
+			SocketAddr::V6(v6) => {
+				if v6.ip().is_multicast()||v6.ip().is_unicast_link_local(){
+					return Err("Blocked address".to_owned());
+				}
+			},
+		}
+	}
+	Ok(())
+}
 async fn get_file(
 	_path:Option<axum::extract::Path<String>>,
 	client_headers:axum::http::HeaderMap,
 	(client,config,dummy_img,fontdb):(reqwest::Client,Arc<ConfigFile>,Arc<Vec<u8>>,Arc<resvg::usvg::fontdb::Database>),
 	axum::extract::Query(q):axum::extract::Query<RequestParams>,
-)->Result<(axum::http::StatusCode,axum::headers::HeaderMap,StreamBody<impl futures::Stream<Item = Result<axum::body::Bytes, reqwest::Error>>>),axum::response::Response>{
+)->Result<(axum::http::StatusCode,HeaderMap,axum::body::Body),axum::response::Response>{
 	println!("{}\t{}\tavatar:{:?}\tpreview:{:?}\tbadge:{:?}\temoji:{:?}\tstatic:{:?}\tfallback:{:?}",
 		chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
 		q.url,
@@ -167,13 +251,26 @@ async fn get_file(
 		q.r#static,
 		q.fallback,
 	);
-	let mut headers=axum::headers::HeaderMap::new();
+	let mut headers=HeaderMap::new();
 	if let Ok(url)=q.url.parse(){
 		headers.append("X-Remote-Url",url);
 	}
 	if config.encode_avif{
 		headers.append("Vary","Accept,Range".parse().unwrap());
 	}
+	let time=chrono::Utc::now();
+	if let Err(s)=check_url(&config,&q.url).await{
+		if let Ok(v)=s.parse(){
+			headers.append("X-Proxy-Error",v);
+		}
+		if q.fallback.is_some(){
+			headers.append("Content-Type","image/png".parse().unwrap());
+			return Err((axum::http::StatusCode::OK,headers,(*dummy_img).clone()).into_response());
+		}
+		return Err((axum::http::StatusCode::BAD_REQUEST,headers).into_response())
+	};
+
+	println!("check_url {}ms",(chrono::Utc::now()-time).num_milliseconds());
 	let req=client.get(&q.url);
 	let req=req.timeout(std::time::Duration::from_millis(config.timeout));
 	let req=req.header("User-Agent",config.user_agent.clone());
@@ -192,7 +289,7 @@ async fn get_file(
 			return Err((axum::http::StatusCode::BAD_REQUEST,headers,format!("{:?}",e)).into_response())
 		}
 	};
-	fn add_remote_header(key:&'static str,headers:&mut axum::headers::HeaderMap,remote_headers:&reqwest::header::HeaderMap){
+	fn add_remote_header(key:&'static str,headers:&mut HeaderMap,remote_headers:&reqwest::header::HeaderMap){
 		for v in remote_headers.get_all(key){
 			headers.append(key,String::from_utf8_lossy(v.as_bytes()).parse().unwrap());
 		}
@@ -229,7 +326,7 @@ async fn get_file(
 			if idx+1>=line.len(){
 				continue;
 			}
-			if let Ok(k)=axum::headers::HeaderName::from_str(&line[0..idx]){
+			if let Ok(k)=axum::http::HeaderName::from_str(&line[0..idx]){
 				if let Ok(v)=line[idx+1..].parse(){
 					headers.append(k,v);
 				}
@@ -296,7 +393,7 @@ impl RequestContext{
 	}
 }
 impl RequestContext{
-	async fn encode(mut self,resp: reqwest::Response,mut is_img:bool)->Result<(axum::http::StatusCode,axum::headers::HeaderMap,StreamBody<impl futures::Stream<Item = Result<axum::body::Bytes, reqwest::Error>>>),axum::response::Response>{
+	async fn encode(mut self,resp: reqwest::Response,mut is_img:bool)->Result<(axum::http::StatusCode,HeaderMap,axum::body::Body),axum::response::Response>{
 		let mut is_svg=false;
 		let mut content_type=None;
 		if let Some(media)=self.headers.get("Content-Type"){
@@ -342,7 +439,7 @@ impl RequestContext{
 		}
 		if is_svg{
 			self.load_all(resp).await?;
-			if let Ok(img)=self.encode_svg(&self.fontdb){
+			if let Ok(img)=self.encode_svg(self.fontdb.clone()){
 				self.headers.remove("Content-Length");
 				self.headers.remove("Content-Range");
 				self.headers.remove("Accept-Ranges");
@@ -397,7 +494,7 @@ impl RequestContext{
 				Self::disposition_ext(&mut self.headers,".unknown");
 			}
 		}
-		let body=StreamBody::new(resp);
+		let body=axum::body::Body::from_stream(resp);
 		if status.is_success(){
 			self.headers.remove("Cache-Control");
 			self.headers.append("Cache-Control","max-age=31536000, immutable".parse().unwrap());

@@ -17,8 +17,8 @@ chmod u+x ./media-proxy-rs
 ```
 利用するプラットフォームに応じて適切なバイナリを選択してください。ファイル名のリストを示します
 ```
-media-proxy-rs_linux-386.gz
-media-proxy-rs_linux-amd64.gz
+media-proxy-rs_linux-386.gz (i686+sse2)
+media-proxy-rs_linux-amd64.gz (x86-64-v3)
 media-proxy-rs_linux-arm-v6.gz
 media-proxy-rs_linux-arm-v7.gz
 media-proxy-rs_linux-arm64.gz
@@ -38,11 +38,19 @@ media-proxy-rs_linux-riscv64.gz
 - [x] i686-unknown-linux-musl
 - [x] riscv64gc-unknown-linux-musl
 
-## ビルド(x64/aarch64 Docker)
+## ビルド(x64 Docker)
 Dockerを使用する場合はbuildxとqemuによるクロスコンパイルが利用できます  
 ビルド対象プラットフォームはtarget supportの項目を参照してください
 1. `git clone https://github.com/yojo-art/media-proxy-rs && cd media-proxy-rs`
 2. `docker build -t media-proxy-rs .`
+
+## ビルド(Docker aarch64等その他)
+./crosstiles/arm64.shのMUSL_NAMEと./crossfiles/deps.shのmuslをダウンロードする処理を調整する必要があります
+
+## プラットフォーム最適化
+amd64ではデフォルトでx86-64-v3向けにビルドしますが、x86-64-v3未満の環境やx86-64-v4向け最適化利用したい場合./crosstiles/amd64.shのRUSTFLAGSを編集してください
+他プラットフォームであればarm64.shやriscv64.shの編集でRUSTFLAGSを変更してください
+最も簡単なのはtarget-cpu=nativeを指定し、実行環境と同じCPUでビルドする方法です
 
 ## ビルド(x64 Debian系)
 この方法では`x86_64-unknown-linux-gnu`向けにビルドします  
