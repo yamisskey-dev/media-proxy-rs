@@ -186,7 +186,7 @@ jobs:
         run: |
           gzip -k media-proxy-rs
       - name: Upload release
-        if: github.repository == 'yojo-art/media-proxy-rs'
+        if: github.repository == 'yamisskey-dev/media-proxy-rs'
         uses: WebFreak001/deploy-nightly@v3.2.0
         with:
           upload_url: https://uploads.github.com/repos/${{ github.repository }}/releases/192617419/assets{?name,label} # find out this value by opening https://api.github.com/repos/<owner>/<repo>/releases in your browser and copy the full "upload_url" value including the {?name,label} part
