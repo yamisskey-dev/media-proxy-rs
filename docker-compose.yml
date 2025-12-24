@@ -1,0 +1,24 @@
+services:
+  media-proxy:
+    image: ghcr.io/yamisskey-dev/media-proxy-rs:main
+    # ローカルでビルドする場合は以下をコメント解除
+    # build: .
+    restart: unless-stopped
+    environment:
+      - MEDIA_PROXY_CONFIG_PATH=/config/config.json
+      # 環境変数でも設定可能（config.jsonより優先）
+      # - MEDIA_PROXY_BIND_ADDR=0.0.0.0:12766
+      # - MEDIA_PROXY_TIMEOUT=10000
+      # - MEDIA_PROXY_MAX_SIZE=268435456
+      # - MEDIA_PROXY_MAX_PIXELS=2048
+      # - MEDIA_PROXY_WEBP_QUALITY=75.0
+      # - MEDIA_PROXY_ENCODE_AVIF=false
+    volumes:
+      - ./config:/config:ro
+    ports:
+      - "12766:12766"
+    healthcheck:
+      test: ["CMD", "./healthcheck", "5555", "http://127.0.0.1:12766/test.webp"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

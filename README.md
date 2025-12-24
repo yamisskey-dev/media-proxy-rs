@@ -3,6 +3,25 @@
 機能的には互換性を維持しつつ、様々な画像形式のデコードに対応  
 ほとんどの画像読み書きに[image crate v0.25](https://crates.io/crates/image/0.25.5)を使用しています
 
+## 実行(Docker Compose)
+```bash
+# リポジトリをクローン
+git clone https://github.com/yamisskey-dev/media-proxy-rs && cd media-proxy-rs
+
+# 設定ファイルをコピーして編集（必要に応じて）
+cp config/config.example.json config/config.json
+# vim config/config.json
+
+# 起動
+docker compose up -d
+
+# ログ確認
+docker compose logs -f
+
+# 停止
+docker compose down
+```
+
 ## 実行(Docker)
 ```
 docker run -itd -p 12766:12766 ghcr.io/yamisskey-dev/media-proxy-rs:main
