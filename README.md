@@ -1,4 +1,8 @@
 # media-proxy-rs
+
+> 本リポジトリは kozakura913 氏による [media-proxy-rs](https://github.com/kozakura913/media-proxy-rs)（現 [yojo-art/media-proxy-rs](https://github.com/yojo-art/media-proxy-rs)）のフォークです。実装のクレジットはフォーク元の作者にあります。
+> yamisskey-dev 版での変更点: Docker Compose 対応の追加、フォーク元の organization 名（User-Agent・各種 URL）の yamisskey-dev への変更、GitHub Actions のリリース ID を yamisskey-dev 用に更新。
+
 ## misskey/cherrypick用メディアプロキシのrust実装
 機能的には互換性を維持しつつ、様々な画像形式のデコードに対応  
 ほとんどの画像読み書きに[image crate v0.25](https://crates.io/crates/image/0.25.5)を使用しています
